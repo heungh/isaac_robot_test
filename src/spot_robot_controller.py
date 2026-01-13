@@ -3,10 +3,19 @@ Spot Robot Standalone Simulation with Physics-based PD Control
 - Isaac Sim을 시작하고 Spot 로봇과 Ground Plane을 자동으로 로드
 - 물리 기반 PD Controller로 자연스러운 보행
 - 키보드 입력으로 로봇 제어 (WASD: 이동, Q/E: 회전, Space: 정지)
+- R키로 녹화 시작/정지
 """
 
 import numpy as np
+import os
+from datetime import datetime
 from isaacsim import SimulationApp
+
+# ============================================================
+# 녹화 설정
+# ============================================================
+RECORDING_ENABLED = False          # 녹화 기능 비활성화 (안정성 문제)
+RECORDING_OUTPUT_DIR = os.path.expanduser("~/recordings")  # 저장 경로
 
 # Isaac Sim 시작
 print("Starting Isaac Sim...")
@@ -144,6 +153,12 @@ for i in range(500):
 print("  Stabilization complete!")
 
 # ============================================================
+# 녹화 변수 (현재 비활성화)
+# ============================================================
+is_recording = False
+recording_frame_count = 0
+
+# ============================================================
 # 키보드 제어 설정
 # ============================================================
 print("\n" + "="*60)
@@ -155,6 +170,8 @@ print("  S: Backward")
 print("  A: Turn Left")
 print("  D: Turn Right")
 print("  Space: Stop")
+if RECORDING_ENABLED:
+    print("  R: Start/Stop Recording")
 print("\nNote: Robot moves by walking, not teleportation!")
 print("="*60)
 
@@ -166,6 +183,7 @@ class KeyboardState:
         self.left = False
         self.right = False
         self.stop = False
+        self.toggle_recording = False
 
 keyboard_state = KeyboardState()
 
@@ -188,6 +206,8 @@ def on_keyboard_event(event, *args, **kwargs):
         elif event.input == carb.input.KeyboardInput.SPACE:
             keyboard_state.stop = True
             print("🔵 Stop")
+        elif event.input == carb.input.KeyboardInput.R:
+            keyboard_state.toggle_recording = True
 
     elif event.type == carb.input.KeyboardEventType.KEY_RELEASE:
         if event.input == carb.input.KeyboardInput.W:
@@ -292,6 +312,11 @@ try:
     while simulation_app.is_running():
         world.step(render=True)
         steps += 1
+
+        # 녹화 토글 처리 (현재 비활성화)
+        if keyboard_state.toggle_recording:
+            keyboard_state.toggle_recording = False
+            print("\n⚠️ Recording feature is currently disabled.")
 
         # 키보드 입력에 따른 명령
         cmd_x = 0.0
