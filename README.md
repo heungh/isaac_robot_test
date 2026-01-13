@@ -4,87 +4,89 @@ AWS 클라우드 환경에서 NVIDIA Isaac Sim을 활용한 Boston Dynamics Spot
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                              AWS Cloud Architecture                                   │
-├─────────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                       │
-│  ┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐             │
-│  │   EC2 g5.4xlarge │     │   Amazon S3      │     │  Amazon Bedrock  │             │
-│  │   ┌────────────┐ │     │   ┌────────────┐ │     │  ┌────────────┐  │             │
-│  │   │ Isaac Sim  │ │     │   │ Video Data │ │     │  │Claude 4.5  │  │             │
-│  │   │ + Spot     │─┼────▶│   │ + Logs     │─┼────▶│  │ Sonnet     │  │             │
-│  │   │ Robot      │ │     │   │            │ │     │  │(CRIS API)  │  │             │
-│  │   └────────────┘ │     │   └────────────┘ │     │  └─────┬──────┘  │             │
-│  │   NVIDIA A10G    │     │                  │     │        │         │             │
-│  └────────┬─────────┘     └────────┬─────────┘     └────────┼─────────┘             │
-│           │                        │                        │                        │
-│           │    ┌───────────────────┼────────────────────────┘                        │
-│           │    │                   │                                                 │
-│           ▼    ▼                   ▼                                                 │
-│  ┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐             │
-│  │  NICE DCV        │     │ Kinesis Data     │     │ Amazon Athena    │             │
-│  │  Remote Desktop  │     │ Firehose         │     │ Log Analysis     │             │
-│  │  (8443 port)     │     │ (Real-time)      │     │                  │             │
-│  └──────────────────┘     └──────────────────┘     └──────────────────┘             │
-│                                                                                       │
-└─────────────────────────────────────────────────────────────────────────────────────┘
-                                        │
-                                        ▼
-┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                         Video Understanding & Analysis                                │
-├─────────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                       │
-│  ┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐             │
-│  │  Twelve Labs     │     │  Movement        │     │  Optimized       │             │
-│  │  Pegasus         │────▶│  Pattern         │────▶│  Control         │             │
-│  │  (Video AI)      │     │  Analysis        │     │  Parameters      │             │
-│  └──────────────────┘     └──────────────────┘     └──────────────────┘             │
-│         │                         │                         │                        │
-│         │    Video Analysis       │   Joint/Position Logs   │   New Gait Patterns   │
-│         └─────────────────────────┴─────────────────────────┴───────────────────────│
-│                                                                                       │
-└─────────────────────────────────────────────────────────────────────────────────────┘
-                                        │
-                                        ▼
-┌─────────────────────────────────────────────────────────────────────────────────────┐
-│                              Feedback Loop                                            │
-├─────────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                       │
-│   1. Simulation Video + Logs  ──▶  2. Pegasus Analysis  ──▶  3. LLM Processing      │
-│                                                                                       │
-│   4. Parameter Optimization   ◀──  5. Movement Improvement  ◀──  Pattern Detection  │
-│                                                                                       │
-└─────────────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph AWS["☁️ AWS Cloud"]
+        subgraph Compute["Compute Layer"]
+            EC2["🖥️ EC2 g5.4xlarge<br/>NVIDIA A10G GPU"]
+            Isaac["🤖 Isaac Sim + Spot Robot"]
+            DCV["🖼️ NICE DCV<br/>Remote Desktop :8443"]
+        end
+
+        subgraph Storage["Storage & Streaming"]
+            S3["📦 Amazon S3<br/>Video + Logs"]
+            Firehose["🔥 Kinesis Data Firehose<br/>Real-time Streaming"]
+        end
+
+        subgraph Analytics["Analytics & AI"]
+            Athena["📊 Amazon Athena<br/>SQL Log Analysis"]
+            Bedrock["🧠 Amazon Bedrock<br/>Claude 4.5 Sonnet<br/>(CRIS API)"]
+        end
+    end
+
+    subgraph VideoAI["🎬 Video Understanding"]
+        Pegasus["🎯 Twelve Labs Pegasus<br/>Video AI Analysis"]
+    end
+
+    subgraph Output["📤 Output"]
+        Params["⚙️ Optimized Gait Parameters"]
+    end
+
+    EC2 --> Isaac
+    EC2 --> DCV
+    Isaac -->|"Video + Logs"| S3
+    S3 --> Firehose
+    Firehose --> Athena
+    S3 -->|"Video"| Pegasus
+    Pegasus -->|"Video Analysis"| Bedrock
+    Athena -->|"Movement Logs"| Bedrock
+    Bedrock -->|"Pattern Analysis"| Params
+    Params -->|"Feedback Loop"| Isaac
 ```
 
 ## Data Flow
 
+```mermaid
+flowchart LR
+    subgraph Simulation["🎮 Simulation"]
+        IsaacSim["Isaac Sim<br/>Spot Robot"]
+    end
+
+    subgraph Pipeline["📡 Data Pipeline"]
+        S3["S3 Storage"]
+        Firehose["Kinesis<br/>Firehose"]
+        Athena["Athena<br/>Query"]
+    end
+
+    subgraph AI["🤖 AI Analysis"]
+        Pegasus["Twelve Labs<br/>Pegasus"]
+        Bedrock["Amazon Bedrock<br/>Claude 4.5"]
+    end
+
+    subgraph Result["📊 Result"]
+        Gait["Optimized<br/>Gait Params"]
+    end
+
+    IsaacSim -->|"Video + Logs"| S3
+    S3 --> Firehose
+    Firehose --> Athena
+    S3 -->|"Video"| Pegasus
+    Pegasus -->|"Video Understanding"| Bedrock
+    Athena -->|"Joint/Position Logs"| Bedrock
+    Bedrock -->|"Movement Pattern<br/>Analysis"| Gait
+    Gait -->|"Feedback"| IsaacSim
 ```
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│  Isaac Sim  │───▶│   S3        │───▶│  Firehose   │───▶│  Athena     │
-│  Simulation │    │   Storage   │    │  Streaming  │    │  Query      │
-└─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
-      │                  │                                      │
-      │                  ▼                                      │
-      │           ┌─────────────┐                              │
-      │           │ Twelve Labs │                              │
-      │           │   Pegasus   │                              │
-      │           └──────┬──────┘                              │
-      │                  │                                      │
-      │                  ▼                                      ▼
-      │           ┌─────────────────────────────────────────────┐
-      │           │        Amazon Bedrock (Claude 4.5)          │
-      │           │   - Video understanding results             │
-      │           │   - Joint position/velocity logs            │
-      │           │   - Movement pattern analysis               │
-      │           └──────────────────┬──────────────────────────┘
-      │                              │
-      │                              ▼
-      │                    ┌─────────────────┐
-      └───────────────────│  Optimized Gait │
-           Feedback       │   Parameters    │
-                          └─────────────────┘
+
+## Feedback Loop
+
+```mermaid
+flowchart LR
+    A["1️⃣ Simulation<br/>Video + Logs"] --> B["2️⃣ Pegasus<br/>Analysis"]
+    B --> C["3️⃣ LLM<br/>Processing"]
+    C --> D["4️⃣ Pattern<br/>Detection"]
+    D --> E["5️⃣ Movement<br/>Improvement"]
+    E --> F["6️⃣ Parameter<br/>Optimization"]
+    F --> A
 ```
 
 ## Project Structure
@@ -145,65 +147,94 @@ sudo dcv create-session --type=virtual --owner ubuntu ubuntu-session
 # Password: <your-password>
 ```
 
-### 4. Run Spot Robot Simulation
+### 4. Upload Source Code
+
+```bash
+# Create project directory on server
+ssh -i your-key.pem ubuntu@<EC2-IP> "mkdir -p ~/spot_project/src"
+
+# Upload source code
+scp -i your-key.pem src/spot_robot_controller.py ubuntu@<EC2-IP>:~/spot_project/src/
+```
+
+### 5. Run Spot Robot Simulation
 
 ```bash
 cd ~/isaac-sim/IsaacSim/_build/linux-x86_64/release
-./python.sh ~/spot_robot_controller.py
+./python.sh ~/spot_project/src/spot_robot_controller.py
 ```
 
 ## Core Components
 
 ### Spot Robot Control Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Spot Robot Controller                         │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐         │
-│  │  Keyboard   │───▶│   Gait      │───▶│ Articulation│         │
-│  │  Input      │    │  Generator  │    │   Action    │         │
-│  │  (WASD)     │    │             │    │             │         │
-│  └─────────────┘    └─────────────┘    └─────────────┘         │
-│                            │                   │                 │
-│                            ▼                   ▼                 │
-│                     ┌─────────────┐    ┌─────────────┐         │
-│                     │  Trotting   │    │  12 DOF     │         │
-│                     │  Gait       │    │  Joint      │         │
-│                     │  Pattern    │    │  Control    │         │
-│                     └─────────────┘    └─────────────┘         │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph Input["⌨️ Input"]
+        KB["Keyboard<br/>WASD"]
+    end
+
+    subgraph Controller["🎮 Controller"]
+        Gait["Gait<br/>Generator"]
+        Trot["Trotting<br/>Pattern"]
+    end
+
+    subgraph Robot["🤖 Robot"]
+        Action["Articulation<br/>Action"]
+        Joints["12 DOF<br/>Joint Control"]
+    end
+
+    KB --> Gait
+    Gait --> Trot
+    Trot --> Action
+    Action --> Joints
 ```
 
 ### Joint Configuration (12 DOF)
 
-```
-Spot Robot Joints:
-├── Front Left (FL)     ├── Front Right (FR)
-│   ├── fl_hx (hip_x)   │   ├── fr_hx (hip_x)
-│   ├── fl_hy (hip_y)   │   ├── fr_hy (hip_y)
-│   └── fl_kn (knee)    │   └── fr_kn (knee)
-│                       │
-├── Hind Left (HL)      └── Hind Right (HR)
-│   ├── hl_hx (hip_x)       ├── hr_hx (hip_x)
-│   ├── hl_hy (hip_y)       ├── hr_hy (hip_y)
-│   └── hl_kn (knee)        └── hr_kn (knee)
+```mermaid
+flowchart TB
+    subgraph Spot["🐕 Spot Robot - 12 DOF"]
+        subgraph Front["Front Legs"]
+            FL["FL (Front Left)<br/>fl_hx, fl_hy, fl_kn"]
+            FR["FR (Front Right)<br/>fr_hx, fr_hy, fr_kn"]
+        end
+        subgraph Hind["Hind Legs"]
+            HL["HL (Hind Left)<br/>hl_hx, hl_hy, hl_kn"]
+            HR["HR (Hind Right)<br/>hr_hx, hr_hy, hr_kn"]
+        end
+    end
 
-Joint Index Mapping:
-  Index 0-3:  hip_x [fl, fr, hl, hr]
-  Index 4-7:  hip_y [fl, fr, hl, hr]
-  Index 8-11: knee  [fl, fr, hl, hr]
+    subgraph Index["Joint Index Mapping"]
+        HX["Index 0-3: hip_x<br/>[fl, fr, hl, hr]"]
+        HY["Index 4-7: hip_y<br/>[fl, fr, hl, hr]"]
+        KN["Index 8-11: knee<br/>[fl, fr, hl, hr]"]
+    end
 ```
 
 ### Trotting Gait Pattern
 
-```python
-# Diagonal leg pairs move together
-# Phase 0:   FL + HR (Front-Left, Hind-Right)
-# Phase π:   FR + HL (Front-Right, Hind-Left)
+```mermaid
+flowchart LR
+    subgraph Phase0["Phase 0"]
+        FL0["FL ⬆️"]
+        HR0["HR ⬆️"]
+    end
 
+    subgraph PhasePI["Phase π"]
+        FR1["FR ⬆️"]
+        HL1["HL ⬆️"]
+    end
+
+    Phase0 -->|"Diagonal Sync"| PhasePI
+    PhasePI -->|"Cycle"| Phase0
+```
+
+**Diagonal leg pairs move together:**
+- **Phase 0:** FL + HR (Front-Left, Hind-Right)
+- **Phase π:** FR + HL (Front-Right, Hind-Left)
+
+```python
 def compute_walking_pose(phase, cmd_x, cmd_yaw):
     """
     Trotting gait computation
@@ -223,8 +254,6 @@ def compute_walking_pose(phase, cmd_x, cmd_yaw):
         # Swing phase: leg in air, moving forward
         # Stance phase: leg on ground, pushing backward
         is_swing = leg_phase > np.pi
-
-        # Apply hip_y and knee offsets based on phase
         ...
 
     return target
@@ -253,27 +282,25 @@ standing_pose = {
 
 ## AWS Services Integration
 
-### Amazon S3
-- Simulation video storage
-- Robot movement logs (position, velocity, joint angles)
+```mermaid
+flowchart TB
+    subgraph Services["AWS Services"]
+        S3["📦 Amazon S3<br/>• Video storage<br/>• Movement logs"]
+        Firehose["🔥 Kinesis Firehose<br/>• Real-time streaming<br/>• Auto S3 delivery"]
+        Athena["📊 Amazon Athena<br/>• SQL queries<br/>• Pattern analysis"]
+        Bedrock["🧠 Amazon Bedrock<br/>• Claude 4.5 Sonnet<br/>• CRIS API endpoint<br/>• Gait optimization"]
+    end
 
-### Amazon Kinesis Data Firehose
-- Real-time log streaming
-- Automatic S3 delivery
+    subgraph External["External Services"]
+        Pegasus["🎯 Twelve Labs Pegasus<br/>• Video understanding<br/>• Visual analysis<br/>• Anomaly detection"]
+    end
 
-### Amazon Athena
-- SQL queries on movement logs
-- Pattern analysis
-
-### Amazon Bedrock (Claude 4.5 Sonnet)
-- CRIS endpoint for API access
-- Movement pattern analysis
-- Gait parameter optimization suggestions
-
-### Twelve Labs Pegasus
-- Video understanding model
-- Visual movement analysis
-- Anomaly detection in robot motion
+    S3 --> Firehose
+    Firehose --> Athena
+    S3 --> Pegasus
+    Pegasus --> Bedrock
+    Athena --> Bedrock
+```
 
 ## Keyboard Controls
 
