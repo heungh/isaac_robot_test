@@ -1,0 +1,364 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Spot Robot AI Debug System - Logs, Video Analysis, and LLM Integration'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: spot-robot-debug
+    Description: Project name for resource naming
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+    Description: Environment name
+
+  TwelveLabsApiKey:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: Twelve Labs API key (optional, can be set later)
+
+Resources:
+  # ============================================================
+  # S3 Buckets
+  # ============================================================
+  DataBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Sub '${ProjectName}-data-${AWS::AccountId}-${AWS::Region}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireLogs
+            Status: Enabled
+            Prefix: logs/
+            ExpirationInDays: 30
+          - Id: ExpireVideos
+            Status: Enabled
+            Prefix: videos/
+            ExpirationInDays: 14
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, PUT, POST]
+            AllowedOrigins: ['*']
+            MaxAge: 3000
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================
+  # Kinesis Data Firehose
+  # ============================================================
+  FirehoseDeliveryStream:
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamName: !Sub '${ProjectName}-log-stream'
+      DeliveryStreamType: DirectPut
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !GetAtt DataBucket.Arn
+        RoleARN: !GetAtt FirehoseRole.Arn
+        Prefix: 'logs/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/hour=!{timestamp:HH}/'
+        ErrorOutputPrefix: 'errors/!{firehose:error-output-type}/year=!{timestamp:yyyy}/month=!{timestamp:MM}/day=!{timestamp:dd}/'
+        BufferingHints:
+          IntervalInSeconds: 60
+          SizeInMBs: 5
+        CompressionFormat: GZIP
+        CloudWatchLoggingOptions:
+          Enabled: true
+          LogGroupName: !Ref FirehoseLogGroup
+          LogStreamName: delivery
+        ProcessingConfiguration:
+          Enabled: true
+          Processors:
+            - Type: AppendDelimiterToRecord
+              Parameters:
+                - ParameterName: Delimiter
+                  ParameterValue: "\\n"
+
+  FirehoseLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/kinesisfirehose/${ProjectName}-log-stream'
+      RetentionInDays: 7
+
+  # ============================================================
+  # IAM Roles
+  # ============================================================
+  FirehoseRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-firehose-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: firehose.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FirehoseS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt DataBucket.Arn
+                  - !Sub '${DataBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - logs:PutLogEvents
+                  - logs:CreateLogStream
+                Resource: !GetAtt FirehoseLogGroup.Arn
+
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-ec2-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: EC2DataAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - firehose:PutRecord
+                  - firehose:PutRecordBatch
+                Resource: !GetAtt FirehoseDeliveryStream.Arn
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt DataBucket.Arn
+                  - !Sub '${DataBucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - athena:StartQueryExecution
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - glue:GetTable
+                  - glue:GetDatabase
+                  - glue:GetPartitions
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref TwelveLabsSecret
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt ParameterHistoryTable.Arn
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub '${ProjectName}-ec2-profile'
+      Roles:
+        - !Ref EC2InstanceRole
+
+  # ============================================================
+  # Secrets Manager (Twelve Labs API Key)
+  # ============================================================
+  TwelveLabsSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ProjectName}/twelvelabs-api-key'
+      Description: Twelve Labs API key for video analysis
+      SecretString: !Sub '{"api_key": "${TwelveLabsApiKey}"}'
+
+  # ============================================================
+  # Glue Database & Table (for Athena)
+  # ============================================================
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Sub '${ProjectName}_db'
+        Description: Database for robot simulation logs
+
+  GlueLogsTable:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref GlueDatabase
+      TableInput:
+        Name: robot_logs
+        Description: Robot simulation logs from Firehose
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: json
+          compressionType: gzip
+        PartitionKeys:
+          - Name: year
+            Type: string
+          - Name: month
+            Type: string
+          - Name: day
+            Type: string
+          - Name: hour
+            Type: string
+        StorageDescriptor:
+          Location: !Sub 's3://${DataBucket}/logs/'
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
+          Columns:
+            - Name: timestamp
+              Type: string
+            - Name: session_id
+              Type: string
+            - Name: step
+              Type: int
+            - Name: height
+              Type: double
+            - Name: position_x
+              Type: double
+            - Name: position_y
+              Type: double
+            - Name: position_z
+              Type: double
+            - Name: velocity_x
+              Type: double
+            - Name: velocity_y
+              Type: double
+            - Name: velocity_z
+              Type: double
+            - Name: action_norm
+              Type: double
+            - Name: cmd_vx
+              Type: double
+            - Name: cmd_vy
+              Type: double
+            - Name: cmd_yaw
+              Type: double
+            - Name: status
+              Type: string
+            - Name: is_fallen
+              Type: boolean
+            - Name: observation
+              Type: string
+            - Name: action
+              Type: string
+
+  # ============================================================
+  # DynamoDB Table (Parameter Change History)
+  # ============================================================
+  ParameterHistoryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-parameter-history'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: session_id
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: S
+      KeySchema:
+        - AttributeName: session_id
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ============================================================
+  # Athena Workgroup
+  # ============================================================
+  AthenaWorkgroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Sub '${ProjectName}-workgroup'
+      State: ENABLED
+      WorkGroupConfiguration:
+        ResultConfiguration:
+          OutputLocation: !Sub 's3://${DataBucket}/athena-results/'
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetricsEnabled: true
+
+Outputs:
+  DataBucketName:
+    Description: S3 bucket for logs and videos
+    Value: !Ref DataBucket
+    Export:
+      Name: !Sub '${ProjectName}-data-bucket'
+
+  FirehoseStreamName:
+    Description: Kinesis Firehose delivery stream name
+    Value: !Ref FirehoseDeliveryStream
+    Export:
+      Name: !Sub '${ProjectName}-firehose-stream'
+
+  EC2InstanceProfileArn:
+    Description: EC2 instance profile ARN
+    Value: !GetAtt EC2InstanceProfile.Arn
+    Export:
+      Name: !Sub '${ProjectName}-ec2-profile-arn'
+
+  GlueDatabaseName:
+    Description: Glue database name for Athena
+    Value: !Ref GlueDatabase
+    Export:
+      Name: !Sub '${ProjectName}-glue-db'
+
+  AthenaWorkgroupName:
+    Description: Athena workgroup name
+    Value: !Ref AthenaWorkgroup
+    Export:
+      Name: !Sub '${ProjectName}-athena-workgroup'
+
+  TwelveLabsSecretArn:
+    Description: Twelve Labs API key secret ARN
+    Value: !Ref TwelveLabsSecret
+    Export:
+      Name: !Sub '${ProjectName}-twelvelabs-secret'
+
+  ParameterHistoryTableName:
+    Description: DynamoDB table for parameter change history
+    Value: !Ref ParameterHistoryTable
+    Export:
+      Name: !Sub '${ProjectName}-parameter-history-table'
+
+  Region:
+    Description: AWS Region
+    Value: !Ref AWS::Region

@@ -21,18 +21,23 @@ echo "[2/5] Installing DCV packages..."
 sudo dpkg -i nice-dcv-server_*.deb || sudo apt-get install -f -y
 sudo dpkg -i nice-xdcv_*.deb || sudo apt-get install -f -y
 
-# 3. Configure DCV
+# 3. Configure DCV (with auto-session on reboot)
 echo "[3/5] Configuring DCV..."
 sudo tee /etc/dcv/dcv.conf > /dev/null << 'EOF'
 [license]
 [log]
+
 [session-management]
 virtual-session-xdg-runtime-dir="/tmp/.dcv-xdg-runtime-dir"
+create-session = true
 
 [session-management/defaults]
+
 [session-management/automatic-console-session]
 owner="ubuntu"
 storage-root="/home/ubuntu"
+session-type="virtual"
+name="main"
 
 [display]
 cuda-devices=["0"]
