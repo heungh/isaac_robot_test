@@ -27,7 +27,7 @@ flowchart LR
 
 1. [EC2 인스턴스 및 Isaac Sim 설치](#1-ec2-인스턴스-및-isaac-sim-설치)
 2. [Isaac Lab으로 강화학습 훈련](#2-isaac-lab으로-강화학습-훈련)
-3. [Standalone 코드로 로봇 제어](#3-standalone-코드로-로봇-제어)
+3. [spot_locomotion.py로 로봇 제어](#3-spot_locomotionpy로-로봇-제어)
 4. [AI 디버그 시스템](#4-ai-디버그-시스템)
 
 ---
@@ -39,7 +39,7 @@ flowchart TB
     subgraph EC2["EC2 g5.4xlarge"]
         subgraph Simulation["Simulation Layer"]
             Isaac["Isaac Sim"]
-            Standalone["spot_rl_standalone.py"]
+            Standalone["spot_locomotion.py"]
             VideoRec["Video Recorder"]
         end
 
@@ -222,71 +222,195 @@ cd ~/isaac-sim/IsaacLab
     └── params/agent.yaml      # 에이전트 설정
 ```
 
-### 2.4 play.py vs Standalone
+### 2.4 play.py vs spot_locomotion.py
 
-| 기능 | play.py | spot_rl_standalone.py |
+| 기능 | play.py | spot_locomotion.py |
 |------|---------|----------------------|
 | 정책 실행 | O | O |
-| 키보드 제어 | **X** | **O** |
-| AWS 로깅 | X | **O** |
-| 비디오 녹화 | 제한적 | **O** |
+| 키보드 제어 (WASD) | **X** | **O** |
+| 3인칭 카메라 추적 | X | **O** |
+| 동시 키 입력 (W+A 등) | X | **O** |
+| IsaacLab 네이티브 실행 | O | O |
 
-**play.py는 키보드 컨트롤을 지원하지 않습니다.** 키보드로 직접 제어하려면 Standalone 코드를 사용하세요.
+**play.py는 키보드 컨트롤을 지원하지 않습니다.** 키보드로 직접 제어하면서 학습된 정책의 보행을 확인하려면 `spot_locomotion.py`를 사용하세요.
 
 ---
 
-## 3. Standalone 코드로 로봇 제어
+## 3. spot_locomotion.py로 로봇 제어
 
-### 3.1 실행 방법
+이 스크립트는 학습된 RL 정책을 로드하여 Spot 로봇을 키보드로 실시간 제어하는 인터랙티브 데모입니다. IsaacLab 환경 위에서 직접 실행되므로 별도의 standalone 래퍼가 필요 없습니다.
 
-```bash
-# 환경 변수 설정 (AWS 로깅 활성화)
-source ~/spot_project/config.env
+### 3.1 소스코드 구조 및 주요 함수 설명
 
-# 실행
-cd ~/isaac-sim/IsaacSim/_build/linux-x86_64/release
-./python.sh ~/spot_project/src/spot_rl_standalone.py
+`spot_locomotion.py`는 크게 **초기화 → 시뮬레이션 루프** 두 단계로 동작합니다.
+
+#### Step 1: 인자 파싱 및 시뮬레이터 실행 (Line 31~53)
+
+```python
+parser = argparse.ArgumentParser(...)
+cli_args.add_rsl_rl_args(parser)
+AppLauncher.add_app_launcher_args(parser)
+args_cli = parser.parse_args()
+
+app_launcher = AppLauncher(args_cli)
+simulation_app = app_launcher.app
 ```
 
-### 3.2 키보드 조작
+**왜 하는가**: `AppLauncher`는 Isaac Sim의 Omniverse 런타임을 부팅합니다. 이 단계가 완료되어야 GPU 물리 시뮬레이션, 렌더링, USD 스테이지가 활성화됩니다. RSL-RL 관련 CLI 인자(`--checkpoint`, `--load_run` 등)도 여기서 파싱되어 이후 체크포인트 로딩에 사용됩니다.
 
-| 키 | 동작 |
-|---|------|
-| W | 전진 (빠르게) |
-| S | 정지 |
-| A/D | 좌/우 회전 |
-| Q/E | 좌/우 횡이동 |
-| **R** | **녹화 시작/중지** |
+#### Step 2: `SpotLocomotionDemo.__init__()` — 환경 및 정책 로드 (Line 93~130)
 
-### 3.3 환경 변수
+```python
+# 체크포인트 경로 결정
+checkpoint = get_checkpoint_path(log_root_path, ...)
 
-```bash
-# config.env
-export AWS_REGION=ap-northeast-2
-export S3_BUCKET=spot-robot-debug-data-xxxxx
-export FIREHOSE_STREAM=spot-robot-debug-log-stream
-export DYNAMODB_TABLE=spot-robot-debug-parameter-history
-export ENABLE_LOGGING=true
-export ENABLE_VIDEO=true
+# 환경 생성: 모든 velocity command를 0으로 초기화 (로봇이 가만히 서 있음)
+env_cfg = SpotFlatEnvCfg_PLAY()
+env_cfg.commands.base_velocity.ranges.lin_vel_x = (0.0, 0.0)
+
+# RSL-RL 래퍼로 감싸기
+self.env = RslRlVecEnvWrapper(ManagerBasedRLEnv(cfg=env_cfg))
+
+# 학습된 PPO 정책 로드
+ppo_runner = OnPolicyRunner(self.env, agent_cfg.to_dict(), ...)
+ppo_runner.load(checkpoint)
+self.policy = ppo_runner.get_inference_policy(device=self.device)
+
+# 키보드 명령 버퍼 (num_envs, 3): [lin_vel_x, lin_vel_y, ang_vel_z]
+self.commands = torch.zeros(env_cfg.scene.num_envs, 3, device=self.device)
 ```
 
-### 3.4 로그 데이터 구조
+**왜 하는가**: `SpotFlatEnvCfg_PLAY`는 평지 보행용 환경 설정입니다. 초기 velocity command를 모두 0으로 설정하는 이유는 시작 시 로봇이 정지 상태를 유지하다가, 사용자가 키보드 입력을 할 때만 움직이게 하기 위함입니다. `commands` 텐서는 이후 매 스텝마다 observation에 주입되어 정책이 어떤 속도로 움직일지 결정하는 기준이 됩니다.
 
-```json
-{
-    "timestamp": "2026-01-16T10:30:00.123Z",
-    "session_id": "sess_abc123",
-    "step": 1234,
-    "height": 0.496,
-    "velocity_x": 0.85,
-    "action_norm": 3.82,
-    "cmd_vx": 1.0,
-    "status": "walking",
-    "is_fallen": false,
-    "observation": "[...]",
-    "action": "[...]"
+#### Step 3: `create_camera()` — 3인칭 카메라 생성 (Line 132~146)
+
+```python
+camera_prim = stage.DefinePrim(self.camera_path, "Camera")
+camera_prim.GetAttribute("focalLength").Set(8.5)
+self.viewport.set_active_camera(self.camera_path)
+```
+
+**왜 하는가**: USD 스테이지에 카메라 프리미티브를 생성하고 뷰포트에 연결합니다. 초점 거리 8.5mm로 설정하여 넓은 시야각을 확보합니다. 이 카메라는 `update_camera()`에서 로봇을 자동 추적하므로, 사용자가 로봇의 보행 상태를 직관적으로 관찰할 수 있습니다.
+
+#### Step 4: `set_up_keyboard()` — 키보드 입력 바인딩 (Line 148~180)
+
+```python
+self._key_to_control = {
+    "W": torch.tensor([FORWARD_SPEED, 0.0, 0.0], ...),  # 전진
+    "S": torch.tensor([-BACKWARD_SPEED, 0.0, 0.0], ...), # 후진
+    "A": torch.tensor([0.0, 0.0, TURN_SPEED], ...),      # 좌회전
+    "D": torch.tensor([0.0, 0.0, -TURN_SPEED], ...),     # 우회전
+    "Q": torch.tensor([0.0, STRAFE_SPEED, 0.0], ...),    # 좌측 이동
+    "E": torch.tensor([0.0, -STRAFE_SPEED, 0.0], ...),   # 우측 이동
+    "SPACE": torch.tensor([0.0, 0.0, 0.0], ...),         # 정지
 }
+self._active_keys: set[str] = set()
 ```
+
+**왜 하는가**: 각 키를 3차원 velocity command 벡터 `[lin_vel_x, lin_vel_y, ang_vel_z]`에 매핑합니다. `_active_keys` set을 사용하여 **동시 키 입력을 지원**합니다 (예: W+A를 누르면 전진하면서 좌회전). 이 방식 덕분에 조이스틱처럼 자연스러운 조합 제어가 가능합니다.
+
+#### Step 5: `_on_keyboard_event()` / `_update_commands()` — 키 입력 처리 (Line 182~221)
+
+```python
+def _on_keyboard_event(self, event):
+    if event.type == KEY_PRESS:
+        if key == "SPACE":
+            self._active_keys.clear()  # 모든 입력 해제
+            self.commands[:] = 0.0
+        elif key in self._key_to_control:
+            self._active_keys.add(key)
+            self._update_commands()
+
+def _update_commands(self):
+    cmd = torch.zeros(3, device=self.device)
+    for key in self._active_keys:
+        cmd += self._key_to_control[key]
+    cmd[0] = cmd[0].clamp(-2.0, 3.0)   # lin_vel_x 범위 제한
+    self.commands[:] = cmd
+```
+
+**왜 하는가**: 키 누름/해제 이벤트를 추적하여 현재 활성 키들의 velocity를 합산합니다. `clamp`로 속도를 물리적으로 합리적인 범위로 제한하여 정책이 비정상적인 입력을 받지 않도록 합니다. SPACE는 비상 정지 역할로, 모든 활성 키를 즉시 해제합니다.
+
+#### Step 6: `update_camera()` — 로봇 추적 카메라 (Line 223~236)
+
+```python
+base_pos = self.env.unwrapped.scene["robot"].data.root_pos_w[0, :]
+base_quat = self.env.unwrapped.scene["robot"].data.root_quat_w[0, :]
+camera_pos = quat_apply(base_quat, self._camera_local_transform) + base_pos
+```
+
+**왜 하는가**: 로봇의 월드 좌표와 회전(quaternion)을 가져와서, 로봇 뒤쪽 2.5m, 위쪽 0.8m 위치에 카메라를 배치합니다. `quat_apply`로 로봇의 회전 방향에 맞춰 카메라가 항상 뒤에서 따라가므로, 로봇이 회전해도 시점이 자연스럽게 유지됩니다.
+
+#### Step 7: `main()` — 시뮬레이션 루프 (Line 239~257)
+
+```python
+def main():
+    demo = SpotLocomotionDemo()
+    obs, _ = demo.env.reset()
+    obs[:, 9:12] = demo.commands  # 초기 command = 0 (정지)
+
+    while simulation_app.is_running():
+        demo.update_camera()
+        with torch.inference_mode():
+            action = demo.policy(obs)           # 정책이 행동 결정
+            obs, _, _, _ = demo.env.step(action) # 환경에 행동 적용
+            obs[:, 9:12] = demo.commands         # 키보드 입력으로 command 덮어쓰기
+```
+
+**왜 하는가**: 이 루프가 전체 데모의 핵심입니다. 매 스텝마다: (1) 카메라 위치 업데이트 → (2) 현재 observation을 정책에 넣어 action 생성 → (3) action을 환경에 적용하여 다음 observation 획득 → (4) observation의 velocity command 부분(인덱스 9~11)을 키보드 입력값으로 덮어씁니다. 이렇게 하면 **환경이 자동 생성하는 랜덤 command 대신 사용자의 키보드 입력이 정책에 전달**됩니다.
+
+### 3.2 실행 방법
+
+```bash
+cd ~/isaac-sim/IsaacLab
+
+# 기본 실행 (GUI 모드, 학습된 최신 체크포인트 자동 로드)
+./isaaclab.sh -p scripts/demos/spot_locomotion.py
+
+# 특정 체크포인트 지정
+./isaaclab.sh -p scripts/demos/spot_locomotion.py \
+  --checkpoint ~/isaac-sim/IsaacLab/logs/rsl_rl/spot_flat/2026-01-15_02-09-06/model_1500.pt
+```
+
+> **참고**: 이 스크립트는 GUI가 필요합니다 (키보드 입력 및 카메라 뷰). `--headless` 옵션과 함께 사용할 수 없습니다.
+
+### 3.3 키보드 조작
+
+| 키 | 동작 | 속도 |
+|---|------|------|
+| W | 전진 | 1.5 m/s |
+| S | 후진 | 0.8 m/s |
+| A | 좌회전 | 1.5 rad/s |
+| D | 우회전 | 1.5 rad/s |
+| Q | 좌측 횡이동 | 0.8 m/s |
+| E | 우측 횡이동 | 0.8 m/s |
+| SPACE | 정지 (모든 명령 해제) | - |
+| C | 3인칭 / 자유 카메라 전환 | - |
+| ESC | 자유 카메라로 전환 | - |
+
+> **동시 입력 지원**: W+A를 동시에 누르면 전진하면서 좌회전합니다.
+
+### 3.4 실행 결과
+
+실행하면 Isaac Sim GUI 창에 Spot 로봇이 평지 위에 서 있는 모습이 나타납니다. 키보드 입력에 따라 로봇이 학습된 보행 정책으로 자연스럽게 걷기 시작합니다.
+
+#### 데모 영상
+
+<!-- TODO: 실행 데모 영상을 추가하세요 -->
+<!-- ![Demo Video](docs/videos/spot_locomotion_demo.mp4) -->
+`[데모 영상 추가 예정]`
+
+#### 실행 화면 스크린샷
+
+<!-- TODO: 실행 화면 스크린샷을 추가하세요 -->
+<!-- ![Screenshot - 로봇 정지 상태](docs/images/spot_standing.png) -->
+`[스크린샷 추가 예정 - 로봇 정지 상태]`
+
+<!-- ![Screenshot - 로봇 보행 중](docs/images/spot_walking.png) -->
+`[스크린샷 추가 예정 - 로봇 보행 중]`
+
+<!-- ![Screenshot - 3인칭 카메라 뷰](docs/images/spot_third_person.png) -->
+`[스크린샷 추가 예정 - 3인칭 카메라 뷰]`
 
 ---
 
@@ -385,7 +509,7 @@ You: 반영해줘
 위 변경사항을 적용하시겠습니까? (y/n): y
 
 🔧 변경사항 적용 중...
-[Backup] Created: backup/auto_reflect/spot_rl_standalone.py.20260116_143022.bak
+[Backup] Created: backup/auto_reflect/spot_locomotion.py.20260116_143022.bak
 [Applied] ACTION_SCALE: 0.2 -> 0.15
 [Applied] KD: 1.5 -> 2.0
 
@@ -471,11 +595,10 @@ cd ~/isaac-sim/IsaacLab
   --num_envs 4096 --headless --max_iterations 1500
 ```
 
-### Standalone 실행 (AWS 로깅 포함)
+### spot_locomotion.py 실행 (인터랙티브 키보드 제어)
 ```bash
-source config.env
-cd ~/isaac-sim/IsaacSim/_build/linux-x86_64/release
-./python.sh ~/spot_project/src/spot_rl_standalone.py
+cd ~/isaac-sim/IsaacLab
+./isaaclab.sh -p scripts/demos/spot_locomotion.py
 ```
 
 ### AI 디버그 채팅
@@ -496,7 +619,7 @@ python src/robot_debug_chat.py -i
 │   ├── 03_isaac_sim_install.sh
 │   └── 04_nicedcv_setup.sh
 ├── src/                            # 소스 코드
-│   ├── spot_rl_standalone.py       # RL 정책 + 키보드 + AWS 로깅
+│   ├── spot_locomotion.py           # RL 정책 + WASD 키보드 제어 + 3인칭 카메라
 │   ├── spot_robot_controller.py    # 수동 PD 제어 (레거시)
 │   └── robot_debug_chat.py         # AI 디버그 채팅
 ├── infra/                          # AWS 인프라
