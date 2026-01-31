@@ -396,9 +396,7 @@ cd ~/isaac-sim/IsaacLab
 
 #### 데모 영상
 
-<!-- TODO: 실행 데모 영상을 추가하세요 -->
-<!-- ![Demo Video](docs/videos/spot_locomotion_demo.mp4) -->
-`[데모 영상 추가 예정]`
+[![Watch the video](https://img.youtube.com/vi/xN_Vvby4T74/maxresdefault.jpg)](https://youtu.be/xN_Vvby4T74)
 
 #### 실행 화면 스크린샷
 
