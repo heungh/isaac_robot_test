@@ -398,17 +398,6 @@ cd ~/isaac-sim/IsaacLab
 
 [![Watch the video](https://img.youtube.com/vi/xN_Vvby4T74/maxresdefault.jpg)](https://youtu.be/xN_Vvby4T74)
 
-#### 실행 화면 스크린샷
-
-<!-- TODO: 실행 화면 스크린샷을 추가하세요 -->
-<!-- ![Screenshot - 로봇 정지 상태](docs/images/spot_standing.png) -->
-`[스크린샷 추가 예정 - 로봇 정지 상태]`
-
-<!-- ![Screenshot - 로봇 보행 중](docs/images/spot_walking.png) -->
-`[스크린샷 추가 예정 - 로봇 보행 중]`
-
-<!-- ![Screenshot - 3인칭 카메라 뷰](docs/images/spot_third_person.png) -->
-`[스크린샷 추가 예정 - 3인칭 카메라 뷰]`
 
 ---
 
